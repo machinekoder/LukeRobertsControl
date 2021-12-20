@@ -1,6 +1,10 @@
 #define ETH_CLK_MODE ETH_CLOCK_GPIO17_OUT
 #define ETH_PHY_POWER 12
 
+#define UART_BUF_SIZE (1024)
+#define CMD_RELAY_OPEN "\xa0\x01\x00\xa1"
+#define CMD_RELAY_CLOSE "\xa0\x01\x01\xa2"
+
 #include <string>
 #include <Arduino.h>
 //#include <ETH.h>
@@ -16,6 +20,9 @@
 #include "lukeroberts.h"
 #include "mqtt_handler.h"
 #include "webpages.h"
+
+#include "driver/uart.h"
+#include "driver/gpio.h"
 
 #if defined(ROTARY_PIN_A)
 #if !defined(ROTARY_PIN_B)
@@ -340,6 +347,38 @@ int set_scene_colortemperature(const String &value) {
 }
 #endif
 
+static bool relay_state = false;
+
+bool get_relais() {
+  return relay_state;
+}
+
+void set_relais(bool on) {
+  if (on) {
+    log_d("Set Relay on");
+    uart_write_bytes(UART_NUM_2, CMD_RELAY_CLOSE, 4);
+    relay_state = true;
+  }
+  else {
+    log_d("Set Relay off");
+    uart_write_bytes(UART_NUM_2, CMD_RELAY_OPEN, 4);
+    relay_state = false;
+  }
+}
+
+bool set_relais(const String &value) {
+  if (value.equals("0") || value.equals("off") || value.equals("false") ||
+      value.equals("0")) {
+      set_relais(false);
+  } else if (value.equals("1") || value.equals("on") || value.equals("true") ||
+          value.equals("1")) {
+      set_relais(true);
+  } else if (value.equals("toggle")) {
+    set_relais(!get_relais());
+  }
+  return get_relais();
+}
+
 void queue_ble_command(const String &value) {
   int len = value.length() / 2;
   char *p;
@@ -473,10 +512,26 @@ bool parse_command(String cmd, String value) {
   bool has_value = value.length() > 0;
 
   // is this a json command
-  if (cmd.equals("uplight")) {
+  if (cmd.equals("multi")) {
+     int position_space = value.indexOf(' ');
+     int position_multi = value.indexOf("multi");
+     int position_start = 0;
+     if (position_multi > -1) {
+        parse_command(value.substring(0, position_space),
+                      value.substring(position_space + 1, position_multi - 1));
+        position_start = position_multi;
+        position_space = value.indexOf(' ', position_multi);
+      }
+     if (position_space != -1) {
+        parse_command(value.substring(position_start, position_space),
+                    value.substring(position_space + 1));
+      }
+      return true;
+  } else if (cmd.equals("uplight")) {
     if (has_value) {
       set_uplight(value.c_str());
     }
+    return true;
   } else if (cmd.equals("downlight")) {
     if (has_value) {
       set_downlight(value.c_str());
@@ -519,6 +574,12 @@ bool parse_command(String cmd, String value) {
     }
     return true;
 #endif
+  } else if (cmd.equals("relais")) {
+    if (has_value) {
+      set_relais(value);
+    } else { /* return state */
+    }
+    return true;
   } else if (cmd.equals("ota")) {
     AppUtils::setupOta();
     mqtt.queue("tele/" HOSTNAME "/ota",
@@ -608,6 +669,20 @@ xTaskCreatePinnedToCore( [](void*){
   vTaskDelete(0);
 },"wp",4096,nullptr,1,nullptr,1);
 */
+
+// init uart
+uart_config_t uart_config = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    };
+
+ESP_ERROR_CHECK(uart_param_config(UART_NUM_2, &uart_config));
+uart_set_pin(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+//ESP_ERROR_CHECK(uart_set_pin(UART_NUM_2, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+ESP_ERROR_CHECK(uart_driver_install(UART_NUM_2, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
 
 //  esp_wifi_stop();
 #ifdef USE_ETHERNET
